@@ -496,8 +496,8 @@ static struct ctl_table kern_table[] = {
 		 */
 		.extra2		= &one_thousand,
 	},
-	{
 #if 0
+	{
 		.procname	= "sched_boost",
 		.data		= &sysctl_sched_boost,
 		.maxlen		= sizeof(unsigned int),
