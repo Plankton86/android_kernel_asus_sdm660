@@ -23,7 +23,7 @@
 		qcom,mdss-dsi-panel-destination = "display_1";
 		qcom,mdss-dsi-panel-framerate = <60>;
 		qcom,mdss-dsi-max-refresh-rate = <60>;
-		qcom,mdss-dsi-min-refresh-rate = <60>;
+		qcom,mdss-dsi-min-refresh-rate = <35>;
 		qcom,mdss-dsi-virtual-channel-id = <0>;
 		qcom,mdss-dsi-stream = <0>;
 		qcom,mdss-dsi-panel-width = <1080>;
