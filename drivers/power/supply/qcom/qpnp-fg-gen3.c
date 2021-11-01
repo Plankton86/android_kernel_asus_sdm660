@@ -3290,14 +3290,14 @@ static int fg_get_time_to_full_locked(struct fg_chip *chip, int *val)
 	vbatt_avg /= MILLI_UNIT;
 
     #ifdef CONFIG_MACH_ASUS_X00TD
-    if (ibatt_avg > 2500)
-		ibatt_avg = 2500; /* force max charging current limitations */
+    if (ibatt_avg > 3000)
+		ibatt_avg = 3000; /* force max charging current limitations */
     #endif
 
 	/* clamp ibatt_avg to iterm */
 	if (msoc <= 90) {
-		if (ibatt_avg < 3000)
-			ibatt_avg = 3000; /* force consistent minimum charging current 3000mA upto 90% battery */
+		if (ibatt_avg < 2500)
+			ibatt_avg = 2500; /* force consistent minimum charging current 2500mA upto 90% battery */
 	} else {
 		if (ibatt_avg < abs(chip->dt.sys_term_curr_ma))
 			ibatt_avg = abs(chip->dt.sys_term_curr_ma);
