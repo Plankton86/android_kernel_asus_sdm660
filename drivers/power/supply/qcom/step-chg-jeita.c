@@ -99,9 +99,9 @@ static struct step_chg_cfg step_chg_config = {
 	 *	.prop_name = "SOC",
 	 *	.fcc_cfg	= {
 	 *		//SOC_LOW	SOC_HIGH	FCC
-	 *		{20,		70,		3000000},
-	 *		{70,		90,		2750000},
-	 *		{90,		100,		2500000},
+	 *		{20,		70,     4000000},
+	 *		{70,		90,     3000000},
+	 *		{90,		100,    2000000},
 	 *	},
 	 */
 };
