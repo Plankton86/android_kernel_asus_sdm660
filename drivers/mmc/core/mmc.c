@@ -28,6 +28,10 @@
 #include "mmc_ops.h"
 #include "sd_ops.h"
 
+#ifdef CONFIG_MACH_ASUS_X00T
+static int IS_BOOT_TIME = 1;  
+#endif
+
 static const unsigned int tran_exp[] = {
 	10000,		100000,		1000000,	10000000,
 	0,		0,		0,		0
@@ -60,6 +64,140 @@ static const unsigned int tacc_mant[] = {
 			__res |= resp[__off-1] << ((32 - __shft) % 32);	\
 		__res & __mask;						\
 	})
+
+
+#ifdef CONFIG_MACH_ASUS_X00T
+static struct {
+	u32 manfid;
+	char *band_type;
+} emmc_vendor_tbl[] = {
+	{ 0x90, "HYNIX" },
+	{ 0x15, "SAMSUNG" },
+	{ 0x45, "SANDISK" },
+	{ 0x70, "KINGSTON" },
+	{ 0x13, "MICRON" },
+	{ 0x10001, "TOSHIBA" },
+};
+
+#define EMMC_VENDOR_TBL_MAX	(sizeof(emmc_vendor_tbl)/sizeof(emmc_vendor_tbl[0]))
+
+static char whole_name[256] = {0};
+
+static char* asus_get_emmc_status(struct mmc_card *card)
+{
+	u32 i;
+	static char c_date[9] = {0};
+
+	struct timeval now;
+	struct tm tm_val;
+
+	do_gettimeofday(&now);
+	time_to_tm(now.tv_sec, 0, &tm_val);
+
+	for (i = 0; i < EMMC_VENDOR_TBL_MAX; i++) {
+		if (card->cid.manfid == emmc_vendor_tbl[i].manfid) {
+			memset(whole_name, 0, sizeof(whole_name));
+			strcpy(whole_name, emmc_vendor_tbl[i].band_type);
+			if (8 == card->ext_csd.rev)
+				strcat(whole_name, "-v5.1-");
+			else if (7 == card->ext_csd.rev)
+				strcat(whole_name, "-v5.0-");
+			else if (6 == card->ext_csd.rev)
+				strcat(whole_name, "-v4.5-");
+			else if (5 == card->ext_csd.rev)
+				strcat(whole_name, "-v4.41-");
+
+			strcat(whole_name, card->mmc_total_size);
+			strcat(whole_name, "G-");
+			strcat(whole_name, "eMMC-");
+			sprintf(c_date, "%d%02d%02d", (int)(1900 + tm_val.tm_year), (int)(1+ tm_val.tm_mon), (int)(tm_val.tm_mday));
+			strcat(whole_name, c_date);
+
+			return whole_name;
+		}
+	}
+	return "Unknown";
+}
+
+static char emmc_health[128];
+static char* asus_get_emmc_health(struct mmc_card *card)
+{
+	int err = 0;
+	u8 *ext_csd = NULL;
+
+	BUG_ON(!card);
+
+	if(IS_BOOT_TIME == 0){ // Need to update ext_csd data
+		pr_info("%s: Need to update EXT_CSD data\n", __func__);
+		pm_runtime_get_sync(&card->dev);
+		mmc_claim_host(card->host);
+		if (mmc_bus_needs_resume(card->host))
+			mmc_resume_bus(card->host);
+
+		if (mmc_card_cmdq(card)) {
+			err = mmc_cmdq_halt_on_empty_queue(card->host);
+			if (err) {
+				pr_err("%s: halt failed while doing %s err (%d)\n",
+						mmc_hostname(card->host), __func__,
+						err);
+				mmc_put_card(card);
+			}
+		}
+
+		err = mmc_get_ext_csd(card, &ext_csd);
+		if (err || !ext_csd) {
+			pr_err("%s: mmc_get_ext_csd failed (%d)\n", __func__, err);
+			goto out_free;
+		}
+
+		/*err = mmc_decode_ext_csd(card, ext_csd);
+		if(err){
+			pr_err("%s: mmc_decode_ext_csd failed (%d)\n", __func__, err);
+		}*/
+		card->ext_csd.pre_eol_info = ext_csd[EXT_CSD_PRE_EOL_INFO];
+		card->ext_csd.device_life_time[0] = ext_csd[268]; //life time for type A
+		card->ext_csd.device_life_time[1] = ext_csd[269]; //life time for type B
+
+		if (mmc_card_cmdq(card)) {
+			if (mmc_cmdq_halt(card->host, false))
+				pr_err("%s: %s: cmdq unhalt failed\n",
+					   mmc_hostname(card->host), __func__);
+		}
+		mmc_put_card(card);
+	}else{ // Don't need to read ext_csd data because it is already up to date.
+		pr_info("%s: Do not need to read EXT_CSD data because it is already up to date.\n", __func__);
+		IS_BOOT_TIME = 0;
+	}
+
+	memset(emmc_health, 0, sizeof(emmc_health));
+	if (card->ext_csd.rev > 6)
+		sprintf(emmc_health, "0x%02x-0x%02x-0x%02x-%s", card->ext_csd.pre_eol_info, card->ext_csd.device_life_time[0], card->ext_csd.device_life_time[1], whole_name);
+	else
+		sprintf(emmc_health, "NoSupport-%s", whole_name);
+
+	kfree(ext_csd);
+	return emmc_health;
+
+out_free:
+	if (mmc_card_cmdq(card)) {
+		if (mmc_cmdq_halt(card->host, false))
+			pr_err("%s: %s: cmdq unhalt failed\n",
+			       mmc_hostname(card->host), __func__);
+	}
+	mmc_put_card(card);
+
+	sprintf(emmc_health, "NoSupport-%s", whole_name);
+
+	return emmc_health;
+}
+
+static char* asus_get_emmc_total_size(struct mmc_card *card)
+{
+	BUG_ON(!card);
+
+	return card->mmc_total_size;
+}
+#endif
 
 static int mmc_switch_status(struct mmc_card *card, bool ignore_crc);
 /*
@@ -400,6 +538,16 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		/* Cards with density > 2GiB are sector addressed */
 		if (card->ext_csd.sectors > (2u * 1024 * 1024 * 1024) / 512)
 			mmc_card_set_blockaddr(card);
+#ifdef CONFIG_MACH_ASUS_X00T
+		if(card->ext_csd.sectors > 80000000)
+			sprintf(card->mmc_total_size, "64");
+		else if(card->ext_csd.sectors > 50000000)
+			sprintf(card->mmc_total_size, "32");
+		else if(card->ext_csd.sectors > 20000000)
+			sprintf(card->mmc_total_size, "16");
+		else
+			sprintf(card->mmc_total_size, "8");
+#endif
 	}
 
 	card->ext_csd.raw_card_type = ext_csd[EXT_CSD_CARD_TYPE];
@@ -416,10 +564,6 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 
 		/* EXT_CSD value is in units of 10ms, but we store in ms */
 		card->ext_csd.part_time = 10 * ext_csd[EXT_CSD_PART_SWITCH_TIME];
-		/* Some eMMC set the value too low so set a minimum */
-		if (card->ext_csd.part_time &&
-		    card->ext_csd.part_time < MMC_MIN_PART_SWITCH_TIME)
-			card->ext_csd.part_time = MMC_MIN_PART_SWITCH_TIME;
 
 		/* Sleep / awake timeout in 100ns units */
 		if (sa_shift > 0 && sa_shift <= 0x17)
@@ -633,6 +777,7 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		card->ext_csd.data_sector_size = 512;
 	}
 
+
 	if (card->ext_csd.rev >= 7) {
 		/* Enhance Strobe is supported since v5.1 which rev should be
 		 * 8 but some eMMC devices can support it with rev 7. So handle
@@ -666,12 +811,33 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		card->ext_csd.enhanced_rpmb_supported =
 			(card->ext_csd.rel_param &
 			 EXT_CSD_WR_REL_PARAM_EN_RPMB_REL_WR);
+#ifdef CONFIG_MACH_ASUS_X00T
+		card->ext_csd.pre_eol_info = ext_csd[EXT_CSD_PRE_EOL_INFO];
+		card->ext_csd.device_life_time[0] = ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A];
+		card->ext_csd.device_life_time[1] = ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B];
+#endif
 	} else {
 		card->ext_csd.cmdq_support = 0;
 		card->ext_csd.cmdq_depth = 0;
 		card->ext_csd.barrier_support = 0;
 		card->ext_csd.cache_flush_policy = 0;
+#ifdef CONFIG_MACH_ASUS_X00T
+		card->ext_csd.pre_eol_info = 0;
+		card->ext_csd.device_life_time[0] = 0;
+		card->ext_csd.device_life_time[1] = 0;
+#endif
 	}
+
+	/*
+	 * GENERIC_CMD6_TIME is to be used "unless a specific timeout is defined
+	 * when accessing a specific field", so use it here if there is no
+	 * PARTITION_SWITCH_TIME.
+	 */
+	if (!card->ext_csd.part_time)
+		card->ext_csd.part_time = card->ext_csd.generic_cmd6_time;
+	/* Some eMMC set the value too low so set a minimum */
+	if (card->ext_csd.part_time < MMC_MIN_PART_SWITCH_TIME)
+		card->ext_csd.part_time = MMC_MIN_PART_SWITCH_TIME;
 
 	/* eMMC v5 or later */
 	if (card->ext_csd.rev >= 7) {
@@ -832,6 +998,13 @@ MMC_DEV_ATTR(raw_rpmb_size_mult, "%#x\n", card->ext_csd.raw_rpmb_size_mult);
 MMC_DEV_ATTR(enhanced_rpmb_supported, "%#x\n",
 		card->ext_csd.enhanced_rpmb_supported);
 MMC_DEV_ATTR(rel_sectors, "%#x\n", card->ext_csd.rel_sectors);
+#ifdef CONFIG_MACH_ASUS_X00T
+MMC_DEV_ATTR(emmc_status, "%s\n", asus_get_emmc_status(card));
+MMC_DEV_ATTR(emmc_health, "%s\n", asus_get_emmc_health(card));
+MMC_DEV_ATTR(emmc_health_A, "0x%02x\n", card->ext_csd.device_life_time[0]);
+MMC_DEV_ATTR(emmc_health_B, "0x%02x\n", card->ext_csd.device_life_time[1]);
+MMC_DEV_ATTR(emmc_total_size, "%s\n", asus_get_emmc_total_size(card));
+#endif
 
 static ssize_t mmc_fwrev_show(struct device *dev,
 			      struct device_attribute *attr,
@@ -871,6 +1044,13 @@ static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_raw_rpmb_size_mult.attr,
 	&dev_attr_enhanced_rpmb_supported.attr,
 	&dev_attr_rel_sectors.attr,
+#ifdef CONFIG_MACH_ASUS_X00T
+	&dev_attr_emmc_status.attr,
+	&dev_attr_emmc_health.attr,
+	&dev_attr_emmc_health_A.attr,
+	&dev_attr_emmc_health_B.attr,
+	&dev_attr_emmc_total_size.attr,
+#endif
 	NULL,
 };
 ATTRIBUTE_GROUPS(mmc_std);
@@ -2683,7 +2863,7 @@ out:
 static int mmc_suspend(struct mmc_host *host)
 {
 	int err;
-	ktime_t start = ktime_get();
+//	ktime_t start = ktime_get();
 
 	MMC_TRACE(host, "%s: Enter\n", __func__);
 	err = _mmc_suspend(host, true);
@@ -2692,8 +2872,8 @@ static int mmc_suspend(struct mmc_host *host)
 		pm_runtime_set_suspended(&host->card->dev);
 	}
 
-	trace_mmc_suspend(mmc_hostname(host), err,
-			ktime_to_us(ktime_sub(ktime_get(), start)));
+//	trace_mmc_suspend(mmc_hostname(host), err,
+//			ktime_to_us(ktime_sub(ktime_get(), start)));
 	MMC_TRACE(host, "%s: Exit err: %d\n", __func__, err);
 	return err;
 }
@@ -2768,7 +2948,7 @@ out:
 static int mmc_resume(struct mmc_host *host)
 {
 	int err = 0;
-	ktime_t start = ktime_get();
+//	ktime_t start = ktime_get();
 
 	MMC_TRACE(host, "%s: Enter\n", __func__);
 	if (!(host->caps & MMC_CAP_RUNTIME_RESUME)) {
@@ -2778,8 +2958,8 @@ static int mmc_resume(struct mmc_host *host)
 	}
 	pm_runtime_enable(&host->card->dev);
 
-	trace_mmc_resume(mmc_hostname(host), err,
-			ktime_to_us(ktime_sub(ktime_get(), start)));
+//	trace_mmc_resume(mmc_hostname(host), err,
+//			ktime_to_us(ktime_sub(ktime_get(), start)));
 	MMC_TRACE(host, "%s: Exit err: %d\n", __func__, err);
 	return err;
 }
@@ -2848,7 +3028,7 @@ unhalt:
 static int mmc_runtime_suspend(struct mmc_host *host)
 {
 	int err;
-	ktime_t start = ktime_get();
+//	ktime_t start = ktime_get();
 
 	if (!(host->caps & MMC_CAP_AGGRESSIVE_PM))
 		return 0;
@@ -2865,8 +3045,8 @@ static int mmc_runtime_suspend(struct mmc_host *host)
 		pr_err("%s: error %d doing aggressive suspend\n",
 			mmc_hostname(host), err);
 
-	trace_mmc_runtime_suspend(mmc_hostname(host), err,
-			ktime_to_us(ktime_sub(ktime_get(), start)));
+//	trace_mmc_runtime_suspend(mmc_hostname(host), err,
+//			ktime_to_us(ktime_sub(ktime_get(), start)));
 	return err;
 }
 
@@ -2876,7 +3056,7 @@ static int mmc_runtime_suspend(struct mmc_host *host)
 static int mmc_runtime_resume(struct mmc_host *host)
 {
 	int err;
-	ktime_t start = ktime_get();
+//	ktime_t start = ktime_get();
 
 	if (!(host->caps & (MMC_CAP_AGGRESSIVE_PM | MMC_CAP_RUNTIME_RESUME)))
 		return 0;
@@ -2887,8 +3067,8 @@ static int mmc_runtime_resume(struct mmc_host *host)
 		pr_err("%s: error %d doing aggressive resume\n",
 			mmc_hostname(host), err);
 
-	trace_mmc_runtime_resume(mmc_hostname(host), err,
-			ktime_to_us(ktime_sub(ktime_get(), start)));
+//	trace_mmc_runtime_resume(mmc_hostname(host), err,
+//			ktime_to_us(ktime_sub(ktime_get(), start)));
 
 	return err;
 }
